@@ -33,6 +33,7 @@ class Workspaces : public AModule, public sigc::trackable {
   void onCmd(const struct Ipc::ipc_response&);
   void onEvent(const struct Ipc::ipc_response&);
   bool filterButtons();
+  static bool isWorkspaceEmpty(const Json::Value&);
   static bool hasFlag(const Json::Value&, const std::string&);
   void updateWindows(const Json::Value&, std::string&);
   Gtk::Button& addButton(const Json::Value&);
@@ -48,10 +49,12 @@ class Workspaces : public AModule, public sigc::trackable {
   std::vector<std::string> high_priority_named_;
   std::vector<std::string> workspaces_order_;
   Gtk::Box box_;
+  const bool use_tree_;
   std::string m_formatWindowSeparator;
   util::RegexCollection m_windowRewriteRules;
   util::JsonParser parser_;
   std::unordered_map<std::string, Gtk::Button> buttons_;
+  std::unordered_map<std::string, std::string> button_labels_;
   std::mutex mutex_;
   Ipc ipc_;
 };

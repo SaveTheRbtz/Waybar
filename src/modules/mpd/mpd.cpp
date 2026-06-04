@@ -51,21 +51,6 @@ auto waybar::modules::MPD::update() -> void {
   ALabel::update();
 }
 
-void waybar::modules::MPD::queryMPD() {
-  if (connection_ != nullptr) {
-    spdlog::trace("{}: fetching state information", module_name_);
-    try {
-      fetchState();
-      spdlog::trace("{}: fetch complete", module_name_);
-    } catch (std::exception const& e) {
-      spdlog::error("{}: {}", module_name_, e.what());
-      state_ = MPD_STATE_UNKNOWN;
-    }
-
-    dp.emit();
-  }
-}
-
 std::string waybar::modules::MPD::getTag(mpd_tag_type type, unsigned idx) const {
   std::string result =
       config_["unknown-tag"].isString() ? config_["unknown-tag"].asString() : "N/A";
@@ -98,7 +83,7 @@ void waybar::modules::MPD::setLabel() {
                       ? config_["format-disconnected"].asString()
                       : "disconnected";
     if (format.empty()) {
-      label_.set_markup(format);
+      setLabelMarkup(format);
       label_.show();
     } else {
       label_.hide();
@@ -110,7 +95,7 @@ void waybar::modules::MPD::setLabel() {
                            ? config_["tooltip-format-disconnected"].asString()
                            : "MPD (disconnected)";
       // Nothing to format
-      label_.set_tooltip_markup(tooltip_format);
+      setTooltipMarkup(tooltip_format);
     }
     return;
   }
@@ -190,7 +175,7 @@ void waybar::modules::MPD::setLabel() {
       label_.hide();
     } else {
       label_.show();
-      label_.set_markup(text);
+      setLabelMarkup(text);
     }
   } catch (fmt::format_error const& e) {
     spdlog::warn("mpd: format error: {}", e.what());
@@ -210,7 +195,7 @@ void waybar::modules::MPD::setLabel() {
           fmt::arg("stateIcon", stateIcon), fmt::arg("consumeIcon", consumeIcon),
           fmt::arg("randomIcon", randomIcon), fmt::arg("repeatIcon", repeatIcon),
           fmt::arg("singleIcon", singleIcon), fmt::arg("filename", filename), fmt::arg("uri", uri));
-      label_.set_tooltip_markup(tooltip_text);
+      setTooltipMarkup(tooltip_text);
     } catch (fmt::format_error const& e) {
       spdlog::warn("mpd: format error (tooltip): {}", e.what());
     }

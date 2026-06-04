@@ -22,6 +22,7 @@ class Window : public AAppIconLabel, public sigc::trackable {
   void setClass(const std::string& classname, bool enable);
   void onEvent(const struct Ipc::ipc_response&);
   void onCmd(const struct Ipc::ipc_response&);
+  bool handleWindowEvent(const Json::Value&);
   std::tuple<std::size_t, int, int, std::string, std::string, std::string, std::string, std::string,
              std::string>
   getFocusedNode(const Json::Value& nodes, std::string& output);

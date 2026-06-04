@@ -34,7 +34,20 @@ Window::Window(const std::string& id, const Bar& bar, const Json::Value& config)
   });
 }
 
-void Window::onEvent(const struct Ipc::ipc_response& res) { getTree(); }
+void Window::onEvent(const struct Ipc::ipc_response& res) {
+  if (res.type == IPC_EVENT_WINDOW) {
+    try {
+      const auto payload = parser_.parse(res.payload);
+      if (handleWindowEvent(payload)) {
+        return;
+      }
+    } catch (const std::exception& e) {
+      spdlog::warn("Window: failed to process window event payload: {}", e.what());
+    }
+  }
+
+  getTree();
+}
 
 void Window::onCmd(const struct Ipc::ipc_response& res) {
   try {
@@ -190,6 +203,45 @@ std::tuple<std::string, std::string, std::string, std::string> getWindowInfo(
     }
   }
   return {app_id, app_class, shell, marks};
+}
+
+bool Window::handleWindowEvent(const Json::Value& payload) {
+  const auto change = payload["change"].isString() ? payload["change"].asString() : "";
+  const auto& container = payload["container"];
+
+  if (change == "fullscreen_mode" || change == "urgent") {
+    return true;
+  }
+
+  if (change != "title" && change != "mark") {
+    return false;
+  }
+
+  if (!container.isObject() || !container["id"].isInt() || !container["focused"].isBool()) {
+    return false;
+  }
+
+  if (!container["focused"].asBool()) {
+    // A title change on an unfocused window cannot affect the focused-window label.
+    return change == "title";
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (container["id"].asInt() != windowId_) {
+    return false;
+  }
+
+  const auto [app_id, app_class, shell, marks] =
+      getWindowInfo(container, config_["show-hidden-marks"].asBool());
+  window_ = Glib::Markup::escape_text(container["name"].asString());
+  app_id_ = app_id;
+  app_class_ = app_class;
+  shell_ = shell;
+  marks_ = marks;
+  updateAppIconName(app_id_, app_class_);
+  dp.emit();
+
+  return true;
 }
 
 std::tuple<std::size_t, int, int, std::string, std::string, std::string, std::string, std::string,

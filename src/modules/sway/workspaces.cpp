@@ -8,6 +8,16 @@
 
 namespace waybar::modules::sway {
 
+namespace {
+
+bool needsWorkspaceTree(const Json::Value& config) { return config["window-rewrite"].isObject(); }
+
+uint32_t workspaceRequestType(bool use_tree) {
+  return use_tree ? IPC_GET_TREE : IPC_GET_WORKSPACES;
+}
+
+}  // namespace
+
 // Helper function to assign a number to a workspace, just like sway. In fact
 // this is taken quite verbatim from `sway/ipc-json.c`.
 int Workspaces::convertWorkspaceNameToNum(const std::string& name) {
@@ -44,7 +54,8 @@ int Workspaces::windowRewritePriorityFunction(std::string const& window_rule) {
 Workspaces::Workspaces(const std::string& id, const Bar& bar, const Json::Value& config)
     : AModule(config, "workspaces", id, false, !config["disable-scroll"].asBool()),
       bar_(bar),
-      box_(bar.orientation, 0) {
+      box_(bar.orientation, 0),
+      use_tree_(needsWorkspaceTree(config)) {
   if (config["format-icons"]["high-priority-named"].isArray()) {
     for (const auto& it : config["format-icons"]["high-priority-named"]) {
       high_priority_named_.push_back(it.asString());
@@ -73,7 +84,7 @@ Workspaces::Workspaces(const std::string& id, const Bar& bar, const Json::Value&
   ipc_.subscribe(R"(["window"])");
   ipc_.signal_event.connect(sigc::mem_fun(*this, &Workspaces::onEvent));
   ipc_.signal_cmd.connect(sigc::mem_fun(*this, &Workspaces::onCmd));
-  ipc_.sendCmd(IPC_GET_TREE);
+  ipc_.sendCmd(workspaceRequestType(use_tree_));
   if (config["enable-bar-scroll"].asBool()) {
     auto& window = const_cast<Bar&>(bar_).window;
     window.add_events(Gdk::SCROLL_MASK | Gdk::SMOOTH_SCROLL_MASK);
@@ -91,37 +102,44 @@ Workspaces::Workspaces(const std::string& id, const Bar& bar, const Json::Value&
 
 void Workspaces::onEvent(const struct Ipc::ipc_response& res) {
   try {
-    ipc_.sendCmd(IPC_GET_TREE);
+    ipc_.sendCmd(workspaceRequestType(use_tree_));
   } catch (const std::exception& e) {
     spdlog::error("Workspaces: {}", e.what());
   }
 }
 
 void Workspaces::onCmd(const struct Ipc::ipc_response& res) {
-  if (res.type == IPC_GET_TREE) {
+  if (res.type == workspaceRequestType(use_tree_)) {
     try {
       {
         std::lock_guard<std::mutex> lock(mutex_);
         auto payload = parser_.parse(res.payload);
         workspaces_.clear();
-        std::vector<Json::Value> outputs;
         bool alloutputs = config_["all-outputs"].asBool();
-        std::copy_if(payload["nodes"].begin(), payload["nodes"].end(), std::back_inserter(outputs),
-                     [&](const auto& output) {
-                       if (alloutputs && output["name"].asString() != "__i3") {
-                         return true;
-                       }
-                       if (output["name"].asString() == bar_.output->name) {
-                         return true;
-                       }
-                       return false;
-                     });
+        if (use_tree_) {
+          std::vector<Json::Value> outputs;
+          std::copy_if(payload["nodes"].begin(), payload["nodes"].end(),
+                       std::back_inserter(outputs), [&](const auto& output) {
+                         if (alloutputs && output["name"].asString() != "__i3") {
+                           return true;
+                         }
+                         if (output["name"].asString() == bar_.output->name) {
+                           return true;
+                         }
+                         return false;
+                       });
 
-        for (auto& output : outputs) {
-          std::copy(output["nodes"].begin(), output["nodes"].end(),
-                    std::back_inserter(workspaces_));
-          std::copy(output["floating_nodes"].begin(), output["floating_nodes"].end(),
-                    std::back_inserter(workspaces_));
+          for (auto& output : outputs) {
+            std::copy(output["nodes"].begin(), output["nodes"].end(),
+                      std::back_inserter(workspaces_));
+            std::copy(output["floating_nodes"].begin(), output["floating_nodes"].end(),
+                      std::back_inserter(workspaces_));
+          }
+        } else {
+          std::copy_if(payload.begin(), payload.end(), std::back_inserter(workspaces_),
+                       [&](const auto& workspace) {
+                         return alloutputs || workspace["output"].asString() == bar_.output->name;
+                       });
         }
 
         // adding persistent workspaces (as per the config file)
@@ -230,6 +248,7 @@ bool Workspaces::filterButtons() {
                            [it](const auto& node) { return node["name"].asString() == it->first; });
     if (ws == workspaces_.end() ||
         (!config_["all-outputs"].asBool() && (*ws)["output"].asString() != bar_.output->name)) {
+      button_labels_.erase(it->first);
       it = buttons_.erase(it);
       needReorder = true;
     } else {
@@ -237,6 +256,13 @@ bool Workspaces::filterButtons() {
     }
   }
   return needReorder;
+}
+
+bool Workspaces::isWorkspaceEmpty(const Json::Value& node) {
+  if (node.isMember("nodes") || node.isMember("floating_nodes")) {
+    return node["nodes"].empty() && node["floating_nodes"].empty();
+  }
+  return node["target_output"].isString();
 }
 
 bool Workspaces::hasFlag(const Json::Value& node, const std::string& flag) {
@@ -286,7 +312,8 @@ auto Workspaces::update() -> void {
   std::lock_guard<std::mutex> lock(mutex_);
   bool needReorder = filterButtons();
   for (auto it = workspaces_.begin(); it != workspaces_.end(); ++it) {
-    auto bit = buttons_.find((*it)["name"].asString());
+    const auto name = (*it)["name"].asString();
+    auto bit = buttons_.find(name);
     if (bit == buttons_.end()) {
       needReorder = true;
     }
@@ -294,7 +321,7 @@ auto Workspaces::update() -> void {
     if (needReorder) {
       box_.reorder_child(button, it - workspaces_.begin());
     }
-    bool noNodes = (*it)["nodes"].empty() && (*it)["floating_nodes"].empty();
+    bool noNodes = isWorkspaceEmpty(*it);
     if (hasFlag((*it), "focused")) {
       button.get_style_context()->add_class("focused");
     } else {
@@ -343,10 +370,14 @@ auto Workspaces::update() -> void {
                    windows.substr(0, windows.length() - m_formatWindowSeparator.length())),
           fmt::arg("output", (*it)["output"].asString()));
     }
-    if (!config_["disable-markup"].asBool()) {
-      static_cast<Gtk::Label*>(button.get_children()[0])->set_markup(output);
-    } else {
-      button.set_label(output);
+    auto& cached_label = button_labels_[name];
+    if (cached_label != output) {
+      if (!config_["disable-markup"].asBool()) {
+        static_cast<Gtk::Label*>(button.get_children()[0])->set_markup(output);
+      } else {
+        button.set_label(output);
+      }
+      cached_label = output;
     }
     onButtonReady(*it, button);
   }
@@ -437,7 +468,7 @@ bool Workspaces::handleScroll(GdkEventScroll* e) {
           if (alloutputs) {
             return hasFlag(workspace, "focused");
           }
-          bool noNodes = workspace["nodes"].empty() && workspace["floating_nodes"].empty();
+          bool noNodes = isWorkspaceEmpty(workspace);
           return hasFlag(workspace, "visible") || (workspace["output"].isString() && noNodes);
         });
     if (it == workspaces_.end()) {

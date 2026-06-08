@@ -3,9 +3,28 @@
 #include <fcntl.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <limits>
+#include <span>
 #include <stdexcept>
+#include <string_view>
 
 namespace waybar::modules::sway {
+namespace {
+
+uint32_t readU32(std::span<const char> data, size_t offset) {
+  uint32_t value{};
+  std::memcpy(&value, data.data() + offset, sizeof(value));
+  return value;
+}
+
+void writeU32(std::span<char> data, size_t offset, uint32_t value) {
+  std::memcpy(data.data() + offset, &value, sizeof(value));
+}
+
+}  // namespace
 
 Ipc::Ipc() {
   const std::string& socketPath = getSocketPath();
@@ -78,13 +97,11 @@ int Ipc::open(const std::string& socketPath) const {
 }
 
 struct Ipc::ipc_response Ipc::recv(int fd) {
-  std::string header;
-  header.resize(ipc_header_size_);
-  auto data32 = reinterpret_cast<uint32_t*>(header.data() + ipc_magic_.size());
+  std::array<char, ipc_header_size_> header{};
   size_t total = 0;
 
-  while (total < ipc_header_size_) {
-    auto res = ::recv(fd, header.data() + total, ipc_header_size_ - total, 0);
+  while (total < header.size()) {
+    auto res = ::recv(fd, header.data() + total, header.size() - total, 0);
     if (fd_event_ == -1 || fd_ == -1) {
       // IPC is closed so just return an empty response
       return {0, 0, ""};
@@ -92,38 +109,45 @@ struct Ipc::ipc_response Ipc::recv(int fd) {
     if (res <= 0) {
       throw std::runtime_error("Unable to receive IPC header");
     }
-    total += res;
+    total += static_cast<size_t>(res);
   }
-  auto magic = std::string(header.data(), header.data() + ipc_magic_.size());
-  if (magic != ipc_magic_) {
+  if (!std::string_view{header.data(), header.size()}.starts_with(ipc_magic_)) {
     throw std::runtime_error("Invalid IPC magic");
   }
 
+  const auto payload_size = readU32(std::span<const char>{header}, ipc_magic_.size());
+  const auto payload_type =
+      readU32(std::span<const char>{header}, ipc_magic_.size() + sizeof(uint32_t));
   total = 0;
   std::string payload;
-  payload.resize(data32[0]);
-  while (total < data32[0]) {
-    auto res = ::recv(fd, payload.data() + total, data32[0] - total, 0);
+  payload.resize(payload_size);
+  while (total < payload_size) {
+    auto res = ::recv(fd, payload.data() + total, payload_size - total, 0);
     if (res < 0) {
       if (errno == EINTR || errno == EAGAIN) {
         continue;
       }
       throw std::runtime_error("Unable to receive IPC payload");
     }
-    total += res;
+    if (res == 0) {
+      throw std::runtime_error("Unable to receive IPC payload");
+    }
+    total += static_cast<size_t>(res);
   }
-  return {data32[0], data32[1], &payload.front()};
+  return {payload_size, payload_type, payload};
 }
 
 struct Ipc::ipc_response Ipc::send(int fd, uint32_t type, const std::string& payload) {
-  std::string header;
-  header.resize(ipc_header_size_);
-  auto data32 = reinterpret_cast<uint32_t*>(header.data() + ipc_magic_.size());
-  memcpy(header.data(), ipc_magic_.c_str(), ipc_magic_.size());
-  data32[0] = payload.size();
-  data32[1] = type;
+  if (payload.size() > std::numeric_limits<uint32_t>::max()) {
+    throw std::runtime_error("IPC payload is too large");
+  }
 
-  if (::send(fd, header.data(), ipc_header_size_, 0) == -1) {
+  std::array<char, ipc_header_size_> header{};
+  std::copy(ipc_magic_.begin(), ipc_magic_.end(), header.begin());
+  writeU32(std::span<char>{header}, ipc_magic_.size(), static_cast<uint32_t>(payload.size()));
+  writeU32(std::span<char>{header}, ipc_magic_.size() + sizeof(uint32_t), type);
+
+  if (::send(fd, header.data(), header.size(), 0) == -1) {
     throw std::runtime_error("Unable to send IPC header");
   }
   if (::send(fd, payload.c_str(), payload.size(), 0) == -1) {

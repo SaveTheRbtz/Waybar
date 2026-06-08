@@ -10,6 +10,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 #include "ipc.hpp"
 #include "util/SafeSignal.hpp"
@@ -38,8 +39,8 @@ class Ipc {
   void setWorker(std::function<void()>&& func);
 
  protected:
-  static inline const std::string ipc_magic_ = "i3-ipc";
-  static inline const size_t ipc_header_size_ = ipc_magic_.size() + 8;
+  static constexpr std::string_view ipc_magic_ = "i3-ipc";
+  static constexpr size_t ipc_header_size_ = ipc_magic_.size() + 2 * sizeof(uint32_t);
 
   const std::string getSocketPath() const;
   int open(const std::string&) const;

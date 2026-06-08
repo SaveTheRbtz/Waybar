@@ -43,6 +43,13 @@ inline std::string read(FILE* fp) {
   return output;
 }
 
+inline void discard(FILE* fp) {
+  std::array<char, 128> buffer = {0};
+  while (feof(fp) == 0) {
+    (void)fgets(buffer.data(), 128, fp);
+  }
+}
+
 inline int close(FILE* fp, pid_t pid) {
   int stat = -1;
   pid_t ret;
@@ -50,6 +57,11 @@ inline int close(FILE* fp, pid_t pid) {
   fclose(fp);
   do {
     ret = waitpid(pid, &stat, WCONTINUED | WUNTRACED);
+    if (ret == -1) {
+      if (errno == EINTR) continue;
+      spdlog::debug("waitpid failed: {}", strerror(errno));
+      break;
+    }
 
     if (WIFEXITED(stat)) {
       spdlog::debug("Cmd exited with code {}", WEXITSTATUS(stat));
@@ -59,14 +71,18 @@ inline int close(FILE* fp, pid_t pid) {
       spdlog::debug("Cmd stopped by {}", WSTOPSIG(stat));
     } else if (WIFCONTINUED(stat)) {
       spdlog::debug("Cmd continued");
-    } else if (ret == -1) {
-      spdlog::debug("waitpid failed: {}", strerror(errno));
-      break;
     } else {
       break;
     }
   } while (!WIFEXITED(stat) && !WIFSIGNALED(stat));
   return stat;
+}
+
+inline int exitCodeFromStatus(int stat) {
+  if (stat == -1) return -1;
+  if (WIFEXITED(stat)) return WEXITSTATUS(stat);
+  if (WIFSIGNALED(stat)) return 128 + WTERMSIG(stat);
+  return -1;
 }
 
 inline FILE* open(const std::string& cmd, int& pid, const std::string& output_name) {
@@ -132,15 +148,16 @@ inline struct res exec(const std::string& cmd, const std::string& output_name) {
   if (!fp) return {-1, ""};
   auto output = command::read(fp);
   auto stat = command::close(fp, pid);
-  return {WEXITSTATUS(stat), output};
+  return {exitCodeFromStatus(stat), output};
 }
 
 inline struct res execNoRead(const std::string& cmd) {
   int pid;
   auto fp = command::open(cmd, pid, "");
   if (!fp) return {-1, ""};
+  command::discard(fp);
   auto stat = command::close(fp, pid);
-  return {WEXITSTATUS(stat), ""};
+  return {exitCodeFromStatus(stat), ""};
 }
 
 inline int32_t forkExec(const std::string& cmd, const std::string& output_name) {

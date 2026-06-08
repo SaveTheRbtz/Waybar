@@ -5,3 +5,6 @@ race:libglib-2.0.so
 race:libpango-1.0.so
 race:libc.so.6
 race:libgio-2.0.so
+race:libglycin-2.so
+race:libpulse.so
+race:libpulsecommon

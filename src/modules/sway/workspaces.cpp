@@ -7,6 +7,19 @@
 #include <string>
 
 namespace waybar::modules::sway {
+namespace {
+
+unsigned int titleUpdateInterval(const Json::Value& config) {
+  const auto& max_updates = config["max-title-updates-per-second"];
+  if (!max_updates.isUInt() || max_updates.asUInt() == 0) {
+    return 0;
+  }
+
+  const auto updates_per_second = max_updates.asUInt();
+  return updates_per_second >= 1000 ? 1 : (1000 + updates_per_second - 1) / updates_per_second;
+}
+
+}  // namespace
 
 // Helper function to assign a number to a workspace, just like sway. In fact
 // this is taken quite verbatim from `sway/ipc-json.c`.
@@ -44,7 +57,8 @@ int Workspaces::windowRewritePriorityFunction(std::string const& window_rule) {
 Workspaces::Workspaces(const std::string& id, const Bar& bar, const Json::Value& config)
     : AModule(config, "workspaces", id, false, !config["disable-scroll"].asBool()),
       bar_(bar),
-      box_(bar.orientation, 0) {
+      box_(bar.orientation, 0),
+      title_update_interval_ms_(titleUpdateInterval(config)) {
   if (config["format-icons"]["high-priority-named"].isArray()) {
     for (const auto& it : config["format-icons"]["high-priority-named"]) {
       high_priority_named_.push_back(it.asString());
@@ -105,11 +119,67 @@ Workspaces::Workspaces(const std::string& id, const Bar& bar, const Json::Value&
   });
 }
 
+Workspaces::~Workspaces() { cancelTitleUpdate(); }
+
 void Workspaces::onEvent(const struct Ipc::ipc_response& res) {
+  if (res.type == IPC_EVENT_WINDOW) {
+    try {
+      if (parser_.parse(res.payload)["change"].asString() == "title") {
+        // Window titles only affect this module when window-rewrite is enabled. When it is enabled,
+        // pace the expensive full-tree refresh while preserving the final title in a burst.
+        if (config_["window-rewrite"].isObject()) {
+          queueTitleUpdate();
+        }
+        return;
+      }
+    } catch (const std::exception& e) {
+      // Fall through to a full refresh so a malformed event cannot leave the module stale.
+      spdlog::warn("Workspaces: failed to process IPC event: {}", e.what());
+    }
+  }
+
+  cancelTitleUpdate();
+  requestTree();
+}
+
+void Workspaces::requestTree() {
   try {
     ipc_.sendCmd(IPC_GET_TREE);
   } catch (const std::exception& e) {
     spdlog::error("Workspaces: {}", e.what());
+  }
+}
+
+void Workspaces::queueTitleUpdate() {
+  if (title_update_interval_ms_ == 0) {
+    requestTree();
+    return;
+  }
+
+  if (title_update_timer_.connected()) {
+    title_update_pending_ = true;
+    return;
+  }
+
+  requestTree();
+  title_update_timer_ = Glib::signal_timeout().connect(
+      sigc::mem_fun(*this, &Workspaces::flushTitleUpdate), title_update_interval_ms_);
+}
+
+bool Workspaces::flushTitleUpdate() {
+  if (!title_update_pending_) {
+    return false;
+  }
+
+  title_update_pending_ = false;
+  requestTree();
+  return true;
+}
+
+void Workspaces::cancelTitleUpdate() {
+  title_update_pending_ = false;
+  if (title_update_timer_.connected()) {
+    title_update_timer_.disconnect();
   }
 }
 

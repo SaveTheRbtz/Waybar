@@ -20,7 +20,7 @@ namespace waybar::modules::sway {
 class Workspaces : public AModule, public sigc::trackable {
  public:
   Workspaces(const std::string&, const waybar::Bar&, const Json::Value&);
-  ~Workspaces() override = default;
+  ~Workspaces() override;
   auto update() -> void override;
 
  private:
@@ -36,6 +36,10 @@ class Workspaces : public AModule, public sigc::trackable {
   bool isWorkspaceIgnored(std::string const& name);
   void onCmd(const struct Ipc::ipc_response&);
   void onEvent(const struct Ipc::ipc_response&);
+  void requestTree();
+  void queueTitleUpdate();
+  bool flushTitleUpdate();
+  void cancelTitleUpdate();
   bool filterButtons();
   static bool hasFlag(const Json::Value&, const std::string&);
   void updateWindows(const Json::Value&, std::string&);
@@ -61,6 +65,9 @@ class Workspaces : public AModule, public sigc::trackable {
   std::unordered_map<std::string, uint16_t> custom_sort_priorities_;
   std::mutex mutex_;
   Ipc ipc_;
+  const unsigned int title_update_interval_ms_;
+  sigc::connection title_update_timer_;
+  bool title_update_pending_{false};
 };
 
 }  // namespace waybar::modules::sway

@@ -75,6 +75,12 @@ Addressed by *sway/window*
 	default: false ++
 	Option to show the focused window along with its workspace styles on all outputs.
 
+*max-title-updates-per-second*: ++
+	typeof: integer ++
+	default: 0 ++
+	Limits how often title changes update the module. Additional title changes are coalesced, and the
+	latest title is shown on the next update. A value of 0 disables the limit.
+
 *offscreen-css*: ++
 	typeof: bool ++
 	default: false ++

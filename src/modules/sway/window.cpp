@@ -15,9 +15,25 @@
 #include "util/rewrite_string.hpp"
 
 namespace waybar::modules::sway {
+namespace {
+
+unsigned int titleUpdateInterval(const Json::Value& config) {
+  const auto& max_updates = config["max-title-updates-per-second"];
+  if (!max_updates.isUInt() || max_updates.asUInt() == 0) {
+    return 0;
+  }
+
+  const auto updates_per_second = max_updates.asUInt();
+  return updates_per_second >= 1000 ? 1 : (1000 + updates_per_second - 1) / updates_per_second;
+}
+
+}  // namespace
 
 Window::Window(const std::string& id, const Bar& bar, const Json::Value& config)
-    : AAppIconLabel(config, "window", id, "{}", 0, true), bar_(bar), windowId_(-1) {
+    : AAppIconLabel(config, "window", id, "{}", 0, true),
+      bar_(bar),
+      windowId_(-1),
+      title_update_interval_ms_(titleUpdateInterval(config)) {
   ipc_.subscribe(R"(["window","workspace"])");
   ipc_.signal_event.connect(sigc::mem_fun(*this, &Window::onEvent));
   ipc_.signal_cmd.connect(sigc::mem_fun(*this, &Window::onCmd));
@@ -34,7 +50,71 @@ Window::Window(const std::string& id, const Bar& bar, const Json::Value& config)
   });
 }
 
-void Window::onEvent(const struct Ipc::ipc_response& res) { getTree(); }
+Window::~Window() { cancelTitleUpdate(); }
+
+void Window::onEvent(const struct Ipc::ipc_response& res) {
+  // A title event contains everything needed to update the label. Requesting the entire tree for
+  // every title change is particularly expensive for applications that animate their title.
+  if (res.type == IPC_EVENT_WINDOW) {
+    try {
+      auto payload = parser_.parse(res.payload);
+      if (payload["change"].asString() == "title") {
+        const auto& container = payload["container"];
+        bool displayed = false;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          displayed = container["id"].asInt() == windowId_;
+          if (displayed) {
+            window_ = Glib::Markup::escape_text(container["name"].asString());
+          }
+        }
+        if (displayed) {
+          queueTitleUpdate();
+        }
+        return;
+      }
+    } catch (const std::exception& e) {
+      // Fall back to the tree query so a malformed event cannot leave the module stale.
+      spdlog::warn("Window: failed to process IPC event: {}", e.what());
+    }
+  }
+
+  cancelTitleUpdate();
+  getTree();
+}
+
+void Window::queueTitleUpdate() {
+  if (title_update_interval_ms_ == 0) {
+    dp.emit();
+    return;
+  }
+
+  if (title_update_timer_.connected()) {
+    title_update_pending_ = true;
+    return;
+  }
+
+  dp.emit();
+  title_update_timer_ = Glib::signal_timeout().connect(
+      sigc::mem_fun(*this, &Window::flushTitleUpdate), title_update_interval_ms_);
+}
+
+bool Window::flushTitleUpdate() {
+  if (!title_update_pending_) {
+    return false;
+  }
+
+  title_update_pending_ = false;
+  dp.emit();
+  return true;
+}
+
+void Window::cancelTitleUpdate() {
+  title_update_pending_ = false;
+  if (title_update_timer_.connected()) {
+    title_update_timer_.disconnect();
+  }
+}
 
 void Window::onCmd(const struct Ipc::ipc_response& res) {
   try {

@@ -114,6 +114,12 @@ warp-on-scroll: ++
 	You may assign an empty value to a rule to have it ignored from generating any representation in workspaces.
 	For Wayland windows `class` is matched against the `app_id`, and for X11 windows against the `class` property.
 
+*max-title-updates-per-second*: ++
+	typeof: integer ++
+	default: 0 ++
+	Limits how often title changes refresh window representations. Additional title changes are
+	coalesced, and the latest state is shown on the next update. A value of 0 disables the limit.
+
 *window-rewrite-default*:
 	typeof: string ++
 	default: "?" ++

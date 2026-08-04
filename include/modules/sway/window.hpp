@@ -15,13 +15,16 @@ namespace waybar::modules::sway {
 class Window : public AAppIconLabel, public sigc::trackable {
  public:
   Window(const std::string&, const waybar::Bar&, const Json::Value&);
-  virtual ~Window() = default;
+  ~Window() override;
   auto update() -> void override;
 
  private:
   void setClass(const std::string& classname, bool enable);
   void onEvent(const struct Ipc::ipc_response&);
   void onCmd(const struct Ipc::ipc_response&);
+  void queueTitleUpdate();
+  bool flushTitleUpdate();
+  void cancelTitleUpdate();
   std::tuple<std::size_t, int, int, std::string, std::string, std::string, std::string, std::string,
              std::string>
   getFocusedNode(const Json::Value& nodes, std::string& output);
@@ -41,6 +44,9 @@ class Window : public AAppIconLabel, public sigc::trackable {
   util::JsonParser parser_;
   std::mutex mutex_;
   Ipc ipc_;
+  const unsigned int title_update_interval_ms_;
+  sigc::connection title_update_timer_;
+  bool title_update_pending_{false};
 };
 
 }  // namespace waybar::modules::sway
